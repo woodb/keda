@@ -126,6 +126,8 @@ var testDatadogClusterAgentMetadata = []datadogAuthMetadataTestData{
 	{"", map[string]string{"useClusterAgentProxy": "true", "datadogMetricName": "test-metric", "datadogMetricNamespace": "application-metrics", "targetValue": "10"}, map[string]string{"token": "test-token", "datadogNamespace": "datadog-system", "datadogMetricsService": "datadog-cluster-agent-metrics-api", "datadogMetricsServicePort": "8443", "authMode": "bearer"}, false},
 	// Test case with custom service name and port to verify URL building
 	{"", map[string]string{"useClusterAgentProxy": "true", "datadogMetricName": "custom-metric", "datadogMetricNamespace": "prod-metrics", "targetValue": "5"}, map[string]string{"token": "test-token", "datadogNamespace": "monitoring", "datadogMetricsService": "custom-datadog-service", "datadogMetricsServicePort": "9443", "authMode": "bearer"}, false},
+	// Test case without bearer auth (default case)
+	{"", map[string]string{"useClusterAgentProxy": "true", "datadogMetricName": "nginx-hits", "datadogMetricNamespace": "default", "targetValue": "2", "type": "global"}, map[string]string{"datadogNamespace": "datadog", "datadogMetricsService": "datadog-cluster-agent-metrics-api", "datadogMetricsServicePort": "8443", "unsafeSsl": "true"}, false},
 }
 
 var testDatadogAPIMetadata = []datadogAuthMetadataTestData{
@@ -273,5 +275,72 @@ func TestBuildMetricURL(t *testing.T) {
 	url := buildMetricURL("https://localhost:8080/apis/datadoghq.com/v1alpha1", "datadogMetricNamespace", "datadogMetricName")
 	if url != "https://localhost:8080/apis/datadoghq.com/v1alpha1/namespaces/datadogMetricNamespace/datadogMetricName" {
 		t.Error("Expected https://localhost:8080/apis/datadoghq.com/v1alpha1/namespaces/datadogMetricNamespace/datadogMetricName, got ", url)
+	}
+}
+
+func TestDatadogClusterAgentHTTPRequest(t *testing.T) {
+	for idx, testData := range testDatadogClusterAgentMetadata {
+		// Skip error cases since we want to test actual HTTP request creation
+		if testData.isError {
+			continue
+		}
+
+		// Parse metadata like the real scaler does
+		meta, err := parseDatadogClusterAgentMetadata(&scalersconfig.ScalerConfig{
+			TriggerMetadata: testData.metadata,
+			AuthParams:      testData.authParams,
+			MetricType:      testData.metricType,
+		}, logr.Discard())
+
+		if err != nil {
+			t.Errorf("Failed to parse metadata for test case %d: %v", idx, err)
+			continue
+		}
+
+		// Create a scaler with the parsed metadata
+		scaler := &datadogScaler{
+			metadata: meta,
+		}
+
+		// Build the URL using the same logic as the real scaler
+		testURL := buildMetricURL(meta.DatadogMetricServiceURL, meta.DatadogMetricNamespace, meta.HpaMetricName)
+
+		req, err := scaler.getDatadogClusterAgentHTTPRequest(context.Background(), testURL)
+
+		// HTTP request creation should always succeed for valid metadata
+		if err != nil {
+			t.Errorf("Test case %d: Unexpected error creating HTTP request: %v", idx, err)
+		}
+		if req == nil {
+			t.Errorf("Test case %d: Expected valid request but got nil", idx)
+			continue
+		}
+
+		// Verify URL
+		if req.URL.String() != testURL {
+			t.Errorf("Test case %d: Expected URL %s, got %s", idx, testURL, req.URL.String())
+		}
+
+		// Verify method
+		if req.Method != "GET" {
+			t.Errorf("Test case %d: Expected GET method, got %s", idx, req.Method)
+		}
+
+		// Check authorization header based on auth mode
+		authHeader := req.Header.Get("Authorization")
+		authMode := testData.authParams["authMode"]
+		token := testData.authParams["token"]
+
+		if authMode == "bearer" && token != "" {
+			expectedAuthHeader := fmt.Sprintf("Bearer %s", token)
+			if authHeader != expectedAuthHeader {
+				t.Errorf("Test case %d: Expected Authorization header '%s', got '%s'", idx, expectedAuthHeader, authHeader)
+			}
+		} else {
+			// Default case - no bearer auth
+			if authHeader != "" {
+				t.Errorf("Test case %d: Expected no Authorization header but got '%s'", idx, authHeader)
+			}
+		}
 	}
 }
