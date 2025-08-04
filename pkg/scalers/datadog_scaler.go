@@ -454,11 +454,10 @@ func (s *datadogScaler) getDatadogClusterAgentHTTPRequest(ctx context.Context, u
 	default:
 		req, err = http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
-			return req, err
+			return nil, err
 		}
+		return req, nil
 	}
-
-	return nil, nil
 }
 
 // GetMetricSpecForScaling returns the MetricSpec for the Horizontal Pod Autoscaler
